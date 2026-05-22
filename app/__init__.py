@@ -1,0 +1,7 @@
+# WebAdmin 包
+"""
+"""
+from app.main import app
+from app.config import settings
+
+__all__ = ['app', 'settings']

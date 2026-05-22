@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package mqtt_data;
+
+// 字段值类型
+message FieldValue {
+  string field_name = 1;
+  oneof value {
+    string string_value = 2;
+    int64 int_value = 3;
+    double float_value = 4;
+    bool bool_value = 5;
+    bytes json_value = 6;
+  }
+  int64 timestamp = 7;
+}
+
+// 详细信息数据块
+message DetailData {
+  string topic = 1;
+  string message_id = 2;
+  int64 timestamp = 3;
+  repeated FieldValue fields = 4;
+  map<string, string> metadata = 5;
+}
+
+// 字段映射配置
+message FieldMapping {
+  string mqtt_field = 1;
+  string db_column = 2;
+  string data_type = 3;
+  bool save_to_detail = 4;
+}
+
+// 映射配置集合
+message MappingConfig {
+  string topic_name = 1;
+  string target_table = 2;
+  repeated FieldMapping mappings = 3;
+  int64 version = 4;
+}

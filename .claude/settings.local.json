@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from app.routers.dashboard import router; print\\('Dashboard router OK'\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -s http://localhost:8000/api/dashboard/device-detail?device_code=XQSHG10-01-04)",
+      "Bash(curl -s http://localhost:8000/api/dashboard/machine-monitor)",
+      "Bash(python3 -m json.tool)",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(kill %1)"
+    ]
+  }
+}

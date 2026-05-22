@@ -1,0 +1,234 @@
+"""
+工艺定义 API
+"""
+import json
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import or_
+
+from app.database import get_db
+from app.models.process_definition import ProcessDefinition
+from app.models.device import Device
+from app.models.mqtt_topic_config import MQTTTopicConfig
+from app.schemas.process_definition import (
+    ProcessDefinitionCreate,
+    ProcessDefinitionUpdate,
+    ProcessDefinitionResponse,
+    ProcessDefinitionListResponse,
+)
+
+router = APIRouter(prefix="/process-definitions", tags=["工艺管理"])
+
+
+def _parse_json_field(value, default=None):
+    """解析 JSON 字段"""
+    if value is None:
+        return default if default is not None else []
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default if default is not None else []
+
+
+def _to_response(proc: ProcessDefinition, db: Session = None) -> ProcessDefinitionResponse:
+    """将模型转换为响应"""
+    data = {
+        "id": proc.id,
+        "process_code": proc.process_code,
+        "process_name": proc.process_name,
+        "description": proc.description,
+        "process_type": proc.process_type,
+        "device_codes": _parse_json_field(proc.device_codes, []),
+        "mqtt_topic_ids": _parse_json_field(proc.mqtt_topic_ids, []),
+        "parameters": _parse_json_field(proc.parameters, {}),
+        "status": proc.status,
+        "created_at": proc.created_at,
+        "updated_at": proc.updated_at,
+        "created_by": proc.created_by,
+        "updated_by": proc.updated_by,
+        "devices": None,
+        "topics": None,
+    }
+
+    # 如果提供了 db session，填充关联的设备和 topic 详情
+    if db:
+        device_codes = data["device_codes"]
+        if device_codes:
+            devices = db.query(Device).filter(Device.device_code.in_(device_codes)).all()
+            data["devices"] = [
+                {"device_code": d.device_code, "device_name": d.device_name, "device_type": d.device_type, "status": d.status}
+                for d in devices
+            ]
+
+        topic_ids = data["mqtt_topic_ids"]
+        if topic_ids:
+            topics = db.query(MQTTTopicConfig).filter(MQTTTopicConfig.id.in_(topic_ids)).all()
+            data["topics"] = [
+                {"id": t.id, "topic_name": t.topic_name, "topic_type": t.topic_type, "enabled": t.enabled}
+                for t in topics
+            ]
+
+    return ProcessDefinitionResponse(**data)
+
+
+@router.get("/", response_model=ProcessDefinitionListResponse)
+def list_process_definitions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    keyword: str = Query(None),
+    process_type: str = Query(None),
+    status: str = Query(None),
+    db: Session = Depends(get_db),
+):
+    """获取工艺定义列表"""
+    query = db.query(ProcessDefinition)
+
+    if keyword:
+        query = query.filter(
+            or_(
+                ProcessDefinition.process_code.contains(keyword),
+                ProcessDefinition.process_name.contains(keyword),
+                ProcessDefinition.description.contains(keyword),
+            )
+        )
+    if process_type:
+        query = query.filter(ProcessDefinition.process_type == process_type)
+    if status:
+        query = query.filter(ProcessDefinition.status == status)
+
+    total = query.count()
+    items = query.order_by(ProcessDefinition.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    return ProcessDefinitionListResponse(
+        total=total,
+        items=[_to_response(item) for item in items],
+    )
+
+
+@router.get("/{proc_id}", response_model=ProcessDefinitionResponse)
+def get_process_definition(proc_id: int, db: Session = Depends(get_db)):
+    """获取工艺定义详情"""
+    proc = db.query(ProcessDefinition).filter(ProcessDefinition.id == proc_id).first()
+    if not proc:
+        raise HTTPException(status_code=404, detail="工艺定义不存在")
+    return _to_response(proc, db=db)
+
+
+@router.post("/", response_model=ProcessDefinitionResponse)
+def create_process_definition(data: ProcessDefinitionCreate, db: Session = Depends(get_db)):
+    """创建工艺定义"""
+    # 检查编码唯一性
+    existing = db.query(ProcessDefinition).filter(ProcessDefinition.process_code == data.process_code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"工艺编码 {data.process_code} 已存在")
+
+    proc = ProcessDefinition(
+        process_code=data.process_code,
+        process_name=data.process_name,
+        description=data.description,
+        process_type=data.process_type,
+        device_codes=json.dumps(data.device_codes or []),
+        mqtt_topic_ids=json.dumps(data.mqtt_topic_ids or []),
+        parameters=json.dumps(data.parameters or {}),
+        status=data.status,
+        created_by=data.created_by,
+        updated_by=data.updated_by,
+    )
+    db.add(proc)
+    db.commit()
+    db.refresh(proc)
+    return _to_response(proc)
+
+
+@router.put("/{proc_id}", response_model=ProcessDefinitionResponse)
+def update_process_definition(proc_id: int, data: ProcessDefinitionUpdate, db: Session = Depends(get_db)):
+    """更新工艺定义"""
+    proc = db.query(ProcessDefinition).filter(ProcessDefinition.id == proc_id).first()
+    if not proc:
+        raise HTTPException(status_code=404, detail="工艺定义不存在")
+
+    update_data = data.model_dump(exclude_unset=True)
+
+    # 如果更新了编码，检查唯一性
+    if "process_code" in update_data and update_data["process_code"] != proc.process_code:
+        existing = db.query(ProcessDefinition).filter(ProcessDefinition.process_code == update_data["process_code"]).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"工艺编码 {update_data['process_code']} 已存在")
+
+    # JSON 字段需要序列化
+    for field in ["device_codes", "mqtt_topic_ids", "parameters"]:
+        if field in update_data and update_data[field] is not None:
+            update_data[field] = json.dumps(update_data[field])
+
+    for key, value in update_data.items():
+        setattr(proc, key, value)
+
+    db.commit()
+    db.refresh(proc)
+    return _to_response(proc, db=db)
+
+
+@router.delete("/{proc_id}")
+def delete_process_definition(proc_id: int, db: Session = Depends(get_db)):
+    """删除工艺定义"""
+    proc = db.query(ProcessDefinition).filter(ProcessDefinition.id == proc_id).first()
+    if not proc:
+        raise HTTPException(status_code=404, detail="工艺定义不存在")
+
+    db.delete(proc)
+    db.commit()
+    return {"message": "删除成功"}
+
+
+@router.get("/{proc_id}/devices")
+def get_process_devices(proc_id: int, db: Session = Depends(get_db)):
+    """获取工艺关联的设备详情"""
+    proc = db.query(ProcessDefinition).filter(ProcessDefinition.id == proc_id).first()
+    if not proc:
+        raise HTTPException(status_code=404, detail="工艺定义不存在")
+
+    device_codes = _parse_json_field(proc.device_codes, [])
+    if not device_codes:
+        return []
+
+    devices = db.query(Device).filter(Device.device_code.in_(device_codes)).all()
+    return [
+        {
+            "device_code": d.device_code,
+            "device_name": d.device_name,
+            "device_type": d.device_type,
+            "model": d.model,
+            "manufacturer": d.manufacturer,
+            "status": d.status,
+            "is_enabled": d.is_enabled,
+        }
+        for d in devices
+    ]
+
+
+@router.get("/{proc_id}/topics")
+def get_process_topics(proc_id: int, db: Session = Depends(get_db)):
+    """获取工艺关联的 MQTT Topic 详情"""
+    proc = db.query(ProcessDefinition).filter(ProcessDefinition.id == proc_id).first()
+    if not proc:
+        raise HTTPException(status_code=404, detail="工艺定义不存在")
+
+    topic_ids = _parse_json_field(proc.mqtt_topic_ids, [])
+    if not topic_ids:
+        return []
+
+    topics = db.query(MQTTTopicConfig).filter(MQTTTopicConfig.id.in_(topic_ids)).all()
+    return [
+        {
+            "id": t.id,
+            "topic_name": t.topic_name,
+            "topic_type": t.topic_type,
+            "enabled": t.enabled,
+            "qos": t.qos,
+            "storage_policy": t.storage_policy,
+            "description": t.description,
+        }
+        for t in topics
+    ]
