@@ -17,7 +17,7 @@ venv/
 .vscode/
 *.swp
 *.swo
-
+.claude
 # OS
 .DS_Store
 Thumbs.db
@@ -25,3 +25,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Node
+node_modules/
